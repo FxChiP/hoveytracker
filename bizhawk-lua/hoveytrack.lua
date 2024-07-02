@@ -15,7 +15,6 @@
 -- conventions
 --
 
-
 --
 -- Stock ALttP (... possibly just the Japanese version; i.e. the same one
 -- you want to use the randomizer on)
@@ -28,8 +27,9 @@
 -- Additionally,
 -- http://alttp.run/hacking/index.php?title=Rom/Unmirrored_WRAM 
 -- indicates that the working save game memory is in $7EF000...
--- Possible that's a "system bus" address -- though I'm pretty sure
--- I tried that and it didn't work out. It's a TODO for the future.
+-- That *is* a System Bus address. Which would have been useful for
+-- having the event system alert us to writes, but see the 
+-- main loop documentation for why we don't do that.
 
 local MIN_OFFSET = 0x00F000
 
@@ -37,6 +37,16 @@ local MIN_OFFSET = 0x00F000
 -- Dungeon items are a bitmap in a 16-bit int
 -- Each one 16-bit int is for: compasses, big keys, and maps
 -- 
+-- I misread the wiki: it turns out that the areas that I had
+-- marked here as "supposedly don't exist" do, of course, exist,
+-- but *certain features* don't; for instance: there is a Big Key
+-- to Hyrule Castle (you use it to free Zelda) but there isn't a
+-- Compass.
+--
+-- XXX: Also I did this wrong because I'm reading the dungeon state
+-- table big-endian-ly, which it's not. But it seems to have worked out
+-- the same way, so...
+--
 local DungeonStateTable = {
 	HyruleCastle = { flag = 64, idx = 1 },    -- supposedly doesn't exist
 	EasternPalace = { flag = 32, idx = 2 }, -- formerly 4 actually 32 bit 5
@@ -52,6 +62,16 @@ local DungeonStateTable = {
 	TurtleRock = {flag = 2048, idx = 12 }, -- formerly 4096 actually 2048 bit 11
 	GanonsTower = {flag = 1024, idx = 13 } -- formerly 8192 actually 1024 bit 10
 }
+
+-- TODO: Quick chest count notes:
+-- 0xE9CB holds the item, so 0xE9C9 and 0xE9CA hold the room number, 0x85 and 0x00 in that order (65816 is LE)
+-- Turned out the room data in WRAM was in 00F10A (0x10A)
+-- 
+-- Chests are assigned to rooms. So the count of chests in a dungeon is the sum of all chests
+-- in all rooms assigned to that dungeon. Each room may have at most 6 chests minus one key or 
+-- special effect (rupee tiles). There is no easy way of knowing if a room has a spare key or
+-- rupee tile thing going on. 
+--
 
 -- Item to offset table
 local trackedTable = {
@@ -194,13 +214,47 @@ local constantState = {
 print("debug: to get into TurtleRock you need " .. constantState.medallionsEntry.TurtleRock)
 print("debug: to get into MiseryMire you need " .. constantState.medallionsEntry.MiseryMire)
 
+print("debug: hooked up callback on chest write")
+
 local currentState = {constants = constantState}
 local dungeonState = {}
 memory.usememorydomain("WRAM")
 
 while true do	
-	-- Can't do it the nice way, do it the hard way, I guess
-	local needUpdate = false
+	-- So hooking into writes to the system bus was an attractive
+	-- option at first -- we wouldn't have to run in a loop and
+	-- do cooperative multitasking with the emulator -- but as it
+	-- turns out, there are at least 4 big problems with it: 
+	-- 1. You can only sign up for 8-bit-wide writes at a time,
+	--    and 16-bit writes are done *frequently*. You could
+	--    potentially set up one hook for the high byte and one
+	--    for the low byte, have them set the same value, and last
+	--    write wins, but that is so much more convoluted and hard
+	--    to read that it's *probably* not worth doing.
+	-- 2. The hooks, once registered, fade into the background
+	--    forever, and are not trivial to remove. While this is also
+	--    to an extent a *benefit* to this system, in practice if you
+	--    have to reload the script, there's a somewhat unintuitive
+	--    intermediate step required of removing all the functions that
+	--    were hooked in, and the ambiguity of the effects of doing so
+	--    (do they get garbage collected?). 
+	-- 3. The set-up would end up being much less linear and much more
+	--    all over the place and difficult to read even if every event
+	--    we hooked into was a nice little 8-bit uint. And because we
+	--    would be doing so many of them, it would *intensely* compound
+	--    the #2 problem. Note that we need to keep fresh on at least 29
+	--    addresses in WRAM (all the items, dungeon states) plus room datas
+	--    etc.
+	-- 4. Save state loads are 100% transparent unless you hook into *them*
+	--    too, which would mean doing a full re-init.
+	--
+	-- So trust me, this way is probably better in every single way anyway.
+	-- We also try to minimize the damage a bit by yielding control back to
+	-- the emulator nearly every chance we get (we'd rather wait on the emulator
+	-- than have the emulator wait on us).
+	--
+
+	local needUpdate = false  -- whether to update the endpoint
 
 	-- Items
 	for trackedItem, trackedOffset in pairs(trackedTable) do
