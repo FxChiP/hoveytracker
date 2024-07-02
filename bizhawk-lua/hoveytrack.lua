@@ -135,6 +135,7 @@ trackedTableMaps.second_bottle, trackedTableMaps.third_bottle, trackedTableMaps.
 --
 
 -- In stock Zelda, magic powder, flute, and boomerangs, are impossible to get side by side
+-- with mushrooms, shovel, and the other boomerang, respectively. 
 -- This might break some logics in randomizers (for instance: can't have powder and mushroom,
 -- but need mushroom for potion shop item)
 -- So they overload the 0x38C offset instead to hold flags that indicate the presence of such simultaneous items
