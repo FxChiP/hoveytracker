@@ -4,6 +4,14 @@
 -- For ALttP Randomizers
 -- Written by FxChiP
 -- 
+
+--
+-- Configuration section
+--
+-- endpoint is where to POST the results to
+--
+endpoint = "http://ultraego.net/hoveytrack/track.php"
+
 -- Note: it's not entirely complete yet; right now
 -- it just parses the memory and builds a table for
 -- converting to JSON (... maybe) and submitting to a
@@ -180,8 +188,14 @@ local CrystalValueMap = {
 	[32] = "Crystal4",      -- Crystal4 would be Thieves' Town (also called Gargoyle's Domain)
 	[64] = "Crystal3"       -- Crystal3 would be Skull Woods
 }
+local PendantSRAMValueMap = {
+	[0x01] = "RedPendant",
+	[0x02] = "BluePendant",
+	[0x04] = "GreenPendant"
+}
 
 local dungeonRewards = {}
+local dungeonRewardsRev = {}
 local dungeonRewardsTypes = memory.read_bytes_as_array(0xC6FE, 11, "CARTROM")
 local dungeonRewardsValues = memory.read_bytes_as_array(0x1209D, 11, "CARTROM")
 for i,rewardType in pairs(dungeonRewardsTypes) do
@@ -193,14 +207,29 @@ for i,rewardType in pairs(dungeonRewardsTypes) do
 			-- I believe the values actually match the ones at offset 0x37A too
 			local crystalValue = CrystalValueMap[dungeonRewardsValues[i]]
 			dungeonRewards[whichDungeon] = crystalValue
+			dungeonRewardsRev[crystalValue] = whichDungeon
 		else
 			-- Pendants' rewards types is the pendants themselves
 			-- Not sure why they switched for crystals
 			dungeonRewards[whichDungeon] = DungeonRewardTypeMap[rewardType]
+			dungeonRewardsRev[rewardType] = whichDungeon
 		end
 		print("debug: " .. whichDungeon .. " rewards with " .. dungeonRewards[whichDungeon])
 	end
 end
+
+local DungeonChestRoomEntries = {
+	EasternPalace = {0xE975, 0xE97B, 0xE9B1, 0xE9B7, 0xE9F3},
+	DesertPalace = {0xE98D, 0xE9B4, 0xE9C0, 0xE9C9},
+	TowerOfHera = {0xE9E4, 0xE9AB, 0xE9F9, 0xE9F6},
+	PalaceOfDarkness = {0xEA35, 0xEA38, 0xEA3B, 0xEA47, 0xEA50, 0xEA3E, 0xEA41, 0xEA44, 0xEA4A, 0xEA4D, 0xEA53, 0xEA56},
+	SwampPalace = {0xEA9B, 0xE987, 0xEAA4, 0xE984, 0xEAA1, 0xEA9E, 0xEAA7, 0xEAAA, 0xEAAD},
+	SkullWoods = {0xE996, 0xE99C, 0xE990, 0xE999, 0xE9FC, 0xE99F, 0xE9C6},
+	ThievesTown = {0xEA0B, 0xEA02, 0xE9FF, 0xEA05, 0xEA08, 0xEA0E, 0xEA11},
+	IcePalace = {0xE9A2, 0xE9D2, 0xE9DB, 0xE9DE, 0xE993, 0xE9E1, 0xE9A8},
+	MiseryMire = {0xEA65, 0xEA5C, 0xEA6B, 0xEA62, 0xEA5F, 0xEA68, 0xE9D8},
+	TurtleRock = {0xEA14, 0xEA20, 0xEA1A, 0xEA1D, 0xEA17, 0xEA23, 0xEA32, 0xEA2F, 0xEA2C, 0xEA29, 0xEA26}
+}
 
 -- Things we need to read only once
 -- They literally cannot change
@@ -220,6 +249,36 @@ print("debug: hooked up callback on chest write")
 local currentState = {constants = constantState}
 local dungeonState = {}
 memory.usememorydomain("WRAM")
+
+--
+-- Used to convert a bitmap value val
+-- Into a list of values based on the bitmap arg
+-- (which is a table of flag -> value pairs)
+--
+function bitmapToList(val, bitmap)
+	ret = {}
+	for bitFlag, value in pairs(bitmap) do
+		if val & bitFlag then ret.insert(value) end
+	end
+	return ret
+end
+
+--
+-- Used to count the number of 1's in a value
+-- Note: only goes up to 16-bit values for now
+--
+
+function popCount(val)
+	local ret = 0
+	local maxBits = 7
+	if val > 255 then
+		maxBits = 15
+	end
+	for shift = 0,maxBits do
+		ret = ret + ((val >> shift) & 0x01)
+	end
+	return ret
+end
 
 while true do	
 	-- So hooking into writes to the system bus was an attractive
@@ -316,6 +375,7 @@ while true do
 	emu.frameadvance()
 
 	-- Dungeon treats
+	-- XXX: yes the SNES CPU is little endian and I'm doing this slightly wrong
 	local compasses = memory.read_u16_be(MIN_OFFSET + 0x364)
 	local bigKeys = memory.read_u16_be(MIN_OFFSET + 0x366)
 	local maps = memory.read_u16_be(MIN_OFFSET + 0x368)
@@ -328,27 +388,56 @@ while true do
 		   or dungeonState[dungeon].hasCompass ~= hasCompass 
 		   or dungeonState[dungeon].hasMap ~= hasMap 
 		   or dungeonState[dungeon].keyCount ~= keysCount then
+			local wasCompleted = false
 			if not dungeonState[dungeon] then
 				print("debug: " .. dungeon .. " first track")
 			else
 				print("debug: " .. dungeon .. " had: key? " .. dungeonState[dungeon].hasBigKey .. " compass? " .. dungeonState[dungeon].hasCompass .. " map? " .. dungeonState[dungeon].hasMap .. " key count? " .. dungeonState[dungeon].keyCount)
+				if dungeonState[dungeon].completed then
+					wasCompleted = true
+				end
 			end
 			dungeonState[dungeon] = {
 			    hasBigKey = hasBigKey,
 			    hasCompass = hasCompass,
 			    hasMap = hasMap,
-			    keyCount = keysCount
+			    keyCount = keysCount,
+				completed = wasCompleted
 			}
 			print("debug: " .. dungeon .. " now has: key? " .. dungeonState[dungeon].hasBigKey .. " compass? " .. dungeonState[dungeon].hasCompass .. " map? " .. dungeonState[dungeon].hasMap .. " keys count? " .. dungeonState[dungeon].keyCount)
 			needUpdate = true
 		end
 		emu.frameadvance()
 	end
-	currentState.dungeons = dungeonState
 
-	-- Progression
-	-- TODO: put this into currentState... heh
-	local pendants, crystals = memory.read_u8(MIN_OFFSET + 0x374), memory.read_u8(MIN_OFFSET + 0x37A)
+	-- Current prizes won
+	local rawPendants, rawCrystals = memory.read_u8(MIN_OFFSET + 0x374), memory.read_u8(MIN_OFFSET + 0x37A)
+	local pendants, crystals = bitmapToList(rawPendants, PendantSRAMValueMap), bitmapToList(rawCrystals, CrystalValueMap)
+	if currentState.crystals ~= crystals or currentState.pendants ~= pendants then
+		needUpdate = true
+		currentState.crystals = crystals
+		currentState.pendants = pendants
+		emu.frameadvance()
+		for _,crystal in pairs(crystals) do
+			whichDungeon = dungeonRewardsRev[crystal]
+			if not dungeonState[whichDungeon].completed then
+				dungeonState[whichDungeon].completed = true
+				print("debug: got crystal " .. crystal .. " from " .. whichDungeon)
+				needUpdate = true
+			end
+		end
+		emu.frameadvance()
+		for _,pendant in pairs(pendants) do
+			whichDungeon = dungeonRewardsRev[pendant]
+			if not dungeonState[whichDungeon].completed then
+				dungeonState[whichDungeon].completed = true
+				print("debug: got pendant " .. pendant .. " from " .. whichDungeon)
+				needUpdate = true
+			end
+		end
+		emu.frameadvance()
+	end
+	currentState.dungeons = dungeonState
 
 	-- Update phase
 	if needUpdate then
