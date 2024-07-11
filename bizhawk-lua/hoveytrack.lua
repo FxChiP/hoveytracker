@@ -10,7 +10,7 @@
 --
 -- endpoint is where to POST the results to
 --
-endpoint = "http://ultraego.net/hoveytrack/track.php"
+local endpoint = "http://ultraego.net/hoveytrack/track.php"
 
 -- Note: it's not entirely complete yet; right now
 -- it just parses the memory and builds a table for
@@ -59,7 +59,7 @@ local DungeonStateTable = {
 	HyruleCastle = { flag = 64, idx = 1 },    -- supposedly doesn't exist
 	EasternPalace = { flag = 32, idx = 2 }, -- formerly 4 actually 32 bit 5
 	DesertPalace = { flag = 16, idx = 3 }, -- formerly 8 actually 16 bit 4
-	Hera = { flag = 8192, idx = 10 },  -- formerly 1024 actually 8192 bit 13
+	TowerOfHera = { flag = 8192, idx = 10 },  -- formerly 1024 actually 8192 bit 13
 	HyruleCastleAga = { flag = 8, idx = 4 },  -- supposedly doesn't exist 
 	IcePalace = {flag = 16384, idx = 9 }, -- formerly 512 actually 16384 bit 14
 	SkullWoods = {flag = 32768, idx = 8 }, -- formerly 256 actually 32768 bit 15
@@ -212,7 +212,7 @@ for i,rewardType in pairs(dungeonRewardsTypes) do
 			-- Pendants' rewards types is the pendants themselves
 			-- Not sure why they switched for crystals
 			dungeonRewards[whichDungeon] = DungeonRewardTypeMap[rewardType]
-			dungeonRewardsRev[rewardType] = whichDungeon
+			dungeonRewardsRev[DungeonRewardTypeMap[rewardType]] = whichDungeon
 		end
 		print("debug: " .. whichDungeon .. " rewards with " .. dungeonRewards[whichDungeon])
 	end
@@ -222,14 +222,59 @@ local DungeonChestRoomEntries = {
 	EasternPalace = {0xE975, 0xE97B, 0xE9B1, 0xE9B7, 0xE9F3},
 	DesertPalace = {0xE98D, 0xE9B4, 0xE9C0, 0xE9C9},
 	TowerOfHera = {0xE9E4, 0xE9AB, 0xE9F9, 0xE9F6},
-	PalaceOfDarkness = {0xEA35, 0xEA38, 0xEA3B, 0xEA47, 0xEA50, 0xEA3E, 0xEA41, 0xEA44, 0xEA4A, 0xEA4D, 0xEA53, 0xEA56},
+	DarkPalace = {0xEA35, 0xEA38, 0xEA3B, 0xEA47, 0xEA50, 0xEA3E, 0xEA41, 0xEA44, 0xEA4A, 0xEA4D, 0xEA53, 0xEA56},
 	SwampPalace = {0xEA9B, 0xE987, 0xEAA4, 0xE984, 0xEAA1, 0xEA9E, 0xEAA7, 0xEAAA, 0xEAAD},
-	SkullWoods = {0xE996, 0xE99C, 0xE990, 0xE999, 0xE9FC, 0xE99F, 0xE9C6},
+	SkullWoods = {0xE996, 0xE99C, 0xE990, 0xE999, 0xE9FC, 0xE9F9F, 0xE9C6},
 	ThievesTown = {0xEA0B, 0xEA02, 0xE9FF, 0xEA05, 0xEA08, 0xEA0E, 0xEA11},
 	IcePalace = {0xE9A2, 0xE9D2, 0xE9DB, 0xE9DE, 0xE993, 0xE9E1, 0xE9A8},
 	MiseryMire = {0xEA65, 0xEA5C, 0xEA6B, 0xEA62, 0xEA5F, 0xEA68, 0xE9D8},
-	TurtleRock = {0xEA14, 0xEA20, 0xEA1A, 0xEA1D, 0xEA17, 0xEA23, 0xEA32, 0xEA2F, 0xEA2C, 0xEA29, 0xEA26}
+	TurtleRock = {0xEA14, 0xEA20, 0xEA1A, 0xEA1D, 0xEA17, 0xEA23, 0xEA32, 0xEA2F, 0xEA2C, 0xEA29, 0xEA26},
+	GanonsTower = {0xEAB6, 0xEAB9, 0xEABC, 0xEABF, 0xEAC2, 0xEAC5, 0xEAC8, 0xEACB, 0xEACE, 0xEAD1, 0xEAD4, 0xEAD7, 0xEADA, 0xEADD, 0xEAE0, 0xEAE3, 0xEAE6, 0xEAE9, 0xEAEC, 0xEAEF, 0xEAF2, 0xEAF5, 0xEAFB, 0xEAFE, 0xEB01, 0xEB04},
+	HyruleCastleAga = {0xEAB3, 0xEAB0},
+	HyruleCastle = {0xEA77, 0xEB5B, 0xEB5E, 0xEB61, 0xE9C, 0xE972, 0xEB0A, 0xEB09, 0xE96F}
 }
+
+local DungeonChestRoomMap = {}
+
+for palace, roomAddrs in pairs(DungeonChestRoomEntries) do
+	for j, roomAddr in pairs(roomAddrs) do
+		local roomIdx = memory.read_u16_le(roomAddr, "CARTROM") & 0x7FFF  -- Mask out the "big chest" indicator
+		if not DungeonChestRoomMap[palace] then
+			DungeonChestRoomMap[palace] = {[roomIdx] = 1}
+		elseif not DungeonChestRoomMap[palace][roomIdx] then
+			DungeonChestRoomMap[palace][roomIdx] = 1
+		else
+			DungeonChestRoomMap[palace][roomIdx] = DungeonChestRoomMap[palace][roomIdx] + 1
+		end
+	end
+	emu.frameadvance()
+end
+
+function getDungeonOpenChestCount(dungeonName)
+	if not DungeonChestRoomMap[dungeonName] then return nil end
+	local ret = 0
+	for roomIdx, totalUnused in pairs(DungeonChestRoomMap[dungeonName]) do
+		-- Room data is 16-bit (2 bytes), therefore roomIdx must be multiplied by 2
+		local roomData = memory.read_u16_le(MIN_OFFSET + (roomIdx * 2), "WRAM")
+		local chestsCount = (
+			((roomData & 0x200) >> 9) +
+			((roomData & 0x100) >> 8) +
+			((roomData & 0x80) >> 7) +
+			((roomData & 0x40) >> 6) +
+			((roomData & 0x20) >> 5) +
+			((roomData & 0x10) >> 4)
+	    )
+		ret = ret + chestsCount
+	end
+	return ret
+end
+
+for palace, roomCounts in pairs(DungeonChestRoomMap) do
+	print(palace .. ":")
+	for room, count in pairs(roomCounts) do
+		print("  Room 0x" .. string.format("%x", room) .. ": " .. count)
+	end
+end
 
 -- Things we need to read only once
 -- They literally cannot change
@@ -258,7 +303,7 @@ memory.usememorydomain("WRAM")
 function bitmapToList(val, bitmap)
 	ret = {}
 	for bitFlag, value in pairs(bitmap) do
-		if val & bitFlag then ret.insert(value) end
+		if ((val & bitFlag) > 0) then table.insert(ret, value) end
 	end
 	return ret
 end
@@ -280,7 +325,7 @@ function popCount(val)
 	return ret
 end
 
-while true do	
+while true do
 	-- So hooking into writes to the system bus was an attractive
 	-- option at first -- we wouldn't have to run in a loop and
 	-- do cooperative multitasking with the emulator -- but as it
@@ -382,17 +427,19 @@ while true do
 	local keyCounts = memory.read_bytes_as_array(MIN_OFFSET + 0x37D, 13)
 	for dungeon, dungeonInfo in pairs(DungeonStateTable) do
 		local hasBigKey, hasCompass, hasMap = (bigKeys & dungeonInfo.flag), (compasses & dungeonInfo.flag), (maps & dungeonInfo.flag)
+		local openedChestCount = getDungeonOpenChestCount(dungeon)
 		keysCount = keyCounts[dungeonInfo.idx]
 		if not dungeonState[dungeon] 
 		   or dungeonState[dungeon].hasBigKey ~= hasBigKey 
 		   or dungeonState[dungeon].hasCompass ~= hasCompass 
 		   or dungeonState[dungeon].hasMap ~= hasMap 
-		   or dungeonState[dungeon].keyCount ~= keysCount then
+		   or dungeonState[dungeon].keyCount ~= keysCount 
+		   or dungeonState[dungeon].openChests ~= openedChestCount then
 			local wasCompleted = false
 			if not dungeonState[dungeon] then
 				print("debug: " .. dungeon .. " first track")
 			else
-				print("debug: " .. dungeon .. " had: key? " .. dungeonState[dungeon].hasBigKey .. " compass? " .. dungeonState[dungeon].hasCompass .. " map? " .. dungeonState[dungeon].hasMap .. " key count? " .. dungeonState[dungeon].keyCount)
+				print("debug: " .. dungeon .. " had: key? " .. dungeonState[dungeon].hasBigKey .. " compass? " .. dungeonState[dungeon].hasCompass .. " map? " .. dungeonState[dungeon].hasMap .. " key count? " .. dungeonState[dungeon].keyCount .. " chests ? " .. dungeonState[dungeon].openChests)
 				if dungeonState[dungeon].completed then
 					wasCompleted = true
 				end
@@ -402,9 +449,10 @@ while true do
 			    hasCompass = hasCompass,
 			    hasMap = hasMap,
 			    keyCount = keysCount,
-				completed = wasCompleted
+				completed = wasCompleted,
+				openChests = openedChestCount
 			}
-			print("debug: " .. dungeon .. " now has: key? " .. dungeonState[dungeon].hasBigKey .. " compass? " .. dungeonState[dungeon].hasCompass .. " map? " .. dungeonState[dungeon].hasMap .. " keys count? " .. dungeonState[dungeon].keyCount)
+			print("debug: " .. dungeon .. " now has: key? " .. dungeonState[dungeon].hasBigKey .. " compass? " .. dungeonState[dungeon].hasCompass .. " map? " .. dungeonState[dungeon].hasMap .. " keys count? " .. dungeonState[dungeon].keyCount .. " chests? " .. dungeonState[dungeon].openChests)
 			needUpdate = true
 		end
 		emu.frameadvance()
@@ -412,29 +460,13 @@ while true do
 
 	-- Current prizes won
 	local rawPendants, rawCrystals = memory.read_u8(MIN_OFFSET + 0x374), memory.read_u8(MIN_OFFSET + 0x37A)
-	local pendants, crystals = bitmapToList(rawPendants, PendantSRAMValueMap), bitmapToList(rawCrystals, CrystalValueMap)
-	if currentState.crystals ~= crystals or currentState.pendants ~= pendants then
+	if currentState.rawCrystals ~= rawCrystals or currentState.rawPendants ~= rawPendants then
 		needUpdate = true
+		local pendants, crystals = bitmapToList(rawPendants, PendantSRAMValueMap), bitmapToList(rawCrystals, CrystalValueMap)
 		currentState.crystals = crystals
+		currentState.rawCrystals = rawCrystals
 		currentState.pendants = pendants
-		emu.frameadvance()
-		for _,crystal in pairs(crystals) do
-			whichDungeon = dungeonRewardsRev[crystal]
-			if not dungeonState[whichDungeon].completed then
-				dungeonState[whichDungeon].completed = true
-				print("debug: got crystal " .. crystal .. " from " .. whichDungeon)
-				needUpdate = true
-			end
-		end
-		emu.frameadvance()
-		for _,pendant in pairs(pendants) do
-			whichDungeon = dungeonRewardsRev[pendant]
-			if not dungeonState[whichDungeon].completed then
-				dungeonState[whichDungeon].completed = true
-				print("debug: got pendant " .. pendant .. " from " .. whichDungeon)
-				needUpdate = true
-			end
-		end
+		currentState.rawPendants = rawPendants
 		emu.frameadvance()
 	end
 	currentState.dungeons = dungeonState
